@@ -1,235 +1,192 @@
-# 📄 OCR Terminal Application (OOP Lab Project)
+# Complete OCR System (Advanced Version)
 
-## Overview
-This project is a **command-line based Optical Character Recognition (OCR) system** implemented in **Python** using **Object-Oriented Programming (OOP)** principles. The application allows users to:
+![Python](https://img.shields.io/badge/Python-3.11-blue)
+![OpenCV](https://img.shields.io/badge/OpenCV-Computer%20Vision-green)
+![Tesseract](https://img.shields.io/badge/Tesseract-OCR-red)
+![License](https://img.shields.io/badge/License-MIT-yellow)
+![Status](https://img.shields.io/badge/Project-Academic%20Lab%20Project-purple)
 
-- Select an image file from the system
-- Choose an OCR language interactively
-- Preprocess the image for better accuracy
-- Extract text using **Tesseract OCR**
-- Display results in a rich, formatted terminal interface
-- Save OCR output to a text file automatically
 
-The project is designed specifically for **academic lab evaluation**, demonstrating clean OOP design, modularity, and integration of third‑party libraries.
+## 📌 Overview
 
----
+This project is an **advanced, CLI-based Optical Character Recognition (OCR) system** implemented in **Python** using **OpenCV, Tesseract OCR, img2table, and Rich**. It is an improved and extended version of a basic OCR system and is designed as an **OOP-focused academic / lab project**.
 
-## Key Features
-
-- 📌 Object-Oriented design (separation of logic & UI)
-- 🖥️ Interactive CLI using **Rich**
-- 🌍 Multi-language OCR support
-- 🧠 Image preprocessing with OpenCV
-- 💾 Auto-saving OCR output to file
-- ⚠️ Robust error handling
+The system is capable of:
+- Automatically correcting image orientation using **word-based scoring**
+- Extracting **plain text**, **tables**, and **mixed content (text + tables)**
+- Handling **bordered and borderless tables**
+- Performing OCR on **handwritten text (with limited accuracy)**
+- Auto-detecting **table columns**
+- Supporting **multiple languages**
+- Providing **comparison images** for analysis (original vs processed)
 
 ---
 
-## Technologies & Libraries Used
+## ✨ Key Features
 
-| Component | Purpose |
-|---------|--------|
-| **Python 3.11** | Core programming language |
-| **OpenCV (cv2)** | Image preprocessing |
-| **NumPy** | Image matrix manipulation |
-| **Pillow (PIL)** | Image format conversion |
-| **pytesseract** | Python wrapper for Tesseract OCR |
-| **Tesseract OCR Engine** | Actual OCR engine |
-| **Rich** | Styled terminal UI |
-| **OS Module** | File handling and system interaction |
+- ✅ **Smart Orientation Detection**  
+  Automatically tests 0°, 90°, 180°, and 270° rotations and selects the best orientation based on real English word detection.
 
----
+- ✅ **Text OCR**  
+  Standard OCR for printed text using OpenCV preprocessing and Tesseract LSTM engine.
 
-## Project Structure
+- ✅ **Table Extraction**  
+  - Border-based table detection using OpenCV morphology
+  - Borderless table OCR using word-position clustering
+  - Optional integration with `img2table` for structured tables
 
-```
-OCR/
-│
-├── main.py               # Main application file
-├── requirements.txt      # Python dependencies
-├── .venv/                # Virtual environment
-├── OCR_Result.txt        # Auto-generated output file
-└── README.md             # Project documentation
-```
+- ✅ **Mixed Content Handling (Text + Table)**  
+  Detects table regions, extracts:
+  - Text above the table
+  - Table content
+  - Text below the table
 
----
+- ✅ **Handwritten Text Support**  
+  Uses multiple preprocessing strategies and selects the best OCR output based on character count.
 
-## How the Application Works
+- ✅ **Auto Column Detection**  
+  Automatically determines the number of columns in tables (manual override supported).
 
-The application is divided into **two main classes**, each with a distinct responsibility:
+- ✅ **Image Comparison Output**  
+  Allows users to visually compare:
+  - Original input image
+  - Orientation-corrected image
+  - Debug images for table detection
 
-### 1️⃣ `OCRProcessor` — Core Logic Class
-
-This class handles **image processing and text extraction**.
-
-**Responsibilities:**
-- Load image from disk
-- Preprocess image for OCR
-- Invoke Tesseract OCR
-- Return extracted text
-
-**Workflow:**
-1. Image is loaded using OpenCV
-2. Image is upscaled for better recognition
-3. Converted to grayscale
-4. Noise is reduced using Gaussian Blur
-5. Adaptive thresholding is applied
-6. Processed image is passed to Tesseract
+- ✅ **Interactive CLI (Rich-based)**  
+  User-friendly terminal UI with menus, tables, panels, and progress indicators.
 
 ---
 
-### 2️⃣ `OCRTerminalApp` — User Interface Class
+## 🧠 System Architecture (OOP Design)
 
-This class manages **user interaction and program flow**.
+The project follows **Object-Oriented Programming principles** with clear separation of responsibilities:
 
-**Responsibilities:**
-- Display program header
-- Prompt user for image path
-- Show language selection menu
-- Execute OCR process
-- Display and save results
+| Class | Responsibility |
+|------|---------------|
+| `OCRApp` | CLI interface and user interaction |
+| `OCRProcessor` | Main processing pipeline controller |
+| `SmartOrientationCorrector` | Detects and fixes image rotation |
+| `TextExtractor` | Extracts printed text |
+| `ImprovedHandwrittenOCR` | Handwritten text extraction |
+| `FixedTableExtractor` | OCR-based table extraction |
+| `Img2TableExtractor` | Structured table extraction using img2table |
+| `FixedMixedContentHandler` | Handles text + table documents |
+| `ContentDetector` | Auto-detects document type |
 
-The UI is implemented using the **Rich** library to enhance readability and usability in the terminal.
-
----
-
-## Supported Languages
-
-| Language | Tesseract Code |
-|--------|---------------|
-| English | `eng` |
-| Spanish | `spa` |
-| French  | `fra` |
-| German  | `deu` |
-
-⚠️ Corresponding language packs must be installed in Tesseract.
+This modular design improves **maintainability, reusability, and testability**.
 
 ---
 
-## How to Run the Project
+## 🔍 How the System Works
 
-### Step 1: Install Python
-Ensure **Python 3.11** is installed and added to PATH.
+1. **Image Input**  
+   User selects an image file via CLI.
 
-### Step 2: Install Tesseract OCR
-- Download from official source
-- Install to default location:
+2. **Orientation Correction (Optional)**  
+   The image is rotated at multiple angles and scored using detected real words. The best orientation is selected.
+
+3. **Content Detection**  
+   The system determines whether the image contains:
+   - Only text
+   - Only tables
+   - Mixed content (text + table)
+
+4. **OCR Processing**  
+   Depending on the mode:
+   - Text → `TextExtractor`
+   - Table → `FixedTableExtractor` / `Img2TableExtractor`
+   - Mixed → `FixedMixedContentHandler`
+   - Handwritten → `ImprovedHandwrittenOCR`
+
+5. **Result Saving & Display**  
+   Extracted text and tables are saved as `.txt` files and displayed in the terminal.
+
+---
+
+## 🖼️ Comparison Images
+
+When enabled, the system saves the following files:
+
+- `original_image.png` → Original uploaded image
+- `corrected_orientation.png` → Orientation-corrected image (if rotated)
+- `debug_edges.png` → Edge detection for table debugging
+
+These images help in **visual verification and debugging**, especially useful for viva demonstrations.
+
+---
+
+## 🌍 Supported Languages
+
+- English (`eng`)
+- Spanish (`spa`)
+- French (`fra`)
+- German (`deu`)
+
+> ⚠️ The same language must be used consistently for text and tables.
+
+---
+
+## 🛠️ Requirements
+
+- Python **3.11**
+- Tesseract OCR (installed separately)
+- Python libraries:
+  ```txt
+  numpy
+  opencv-python
+  pillow
+  pytesseract
+  rich
+  img2table
   ```
-  C:\Program Files\Tesseract-OCR\
-  ```
 
-### Step 3: Create Virtual Environment
+---
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
+## ▶️ How to Run
 
-### Step 4: Install Dependencies
-
-```powershell
-pip install -r requirements.txt
-```
-
-### Step 5: Run the Application
-
-```powershell
+```bash
 python main.py
 ```
 
----
-
-## Output
-
-- Extracted text is:
-  - Displayed in terminal
-  - Saved to `OCR_Result.txt`
-  - Automatically opened after completion
+Follow the interactive prompts to:
+- Select image
+- Choose language
+- Select OCR mode
+- Enable orientation correction
+- Enable image comparison
 
 ---
 
-## Important Terminologies Explained
+## ⚠️ Limitations
 
-### OCR (Optical Character Recognition)
-Technology used to convert images containing text into machine-readable text.
-
-### Tesseract OCR
-An open-source OCR engine developed by Google, responsible for actual text recognition.
-
-### pytesseract
-A Python wrapper that allows Python programs to communicate with Tesseract.
-
-### OpenCV
-A computer vision library used here for image preprocessing to improve OCR accuracy.
-
-### Adaptive Thresholding
-A technique that converts grayscale images to binary images by calculating thresholds locally, improving recognition under uneven lighting.
-
-### Gaussian Blur
-A noise-reduction technique that smooths images before thresholding.
-
-### PSM (Page Segmentation Mode)
-Controls how Tesseract splits the image into text blocks.
-- `PSM 6`: Assumes a single uniform block of text
-
-### OEM (OCR Engine Mode)
-Specifies which OCR engine Tesseract should use.
-- `OEM 3`: Default LSTM-based engine
-
-### Rich Library
-A Python library that enhances terminal output using colors, tables, panels, and status indicators.
+- Handwritten OCR accuracy is limited
+- Very complex or noisy tables may fail
+- Orientation detection relies on known words
+- Non-Latin scripts require additional tuning
 
 ---
 
-## OOP Concepts Demonstrated
+## 🚀 Future Improvements
 
-- ✅ Encapsulation
-- ✅ Separation of concerns
-- ✅ Modular class design
-- ✅ Reusability
-- ✅ Clean abstraction
-
----
-
-## Academic Relevance
-
-This project is suitable for:
-- OOP Lab Assessment
-- Python Programming Lab
-- Image Processing Fundamentals
-- Software Engineering Demonstration
+- GUI version (Tkinter / PyQt)
+- PDF OCR support
+- Better handwritten recognition using deep learning
+- Automatic language detection
+- Export tables as CSV / Excel
 
 ---
 
-## Author
+## 👤 Authors
 
-- **Muhammad Inshal Saqib Siddiqui**  
-- **Muhammad Hamza Latif Khan**  
-- **Muhammad Abdullah Sohail**  
+- **Muhammad Inshal Saqib Siddiqui**
+- **Muhammad Hamza Latif Khan**
+- **Muhammad Abdullah Sohail**
 - **Marwan Ali**
 
 ---
 
-## Limitations
+## 📜 License
 
-- OCR accuracy depends heavily on image quality and resolution
-- Handwritten text is not supported
-- Non‑Latin scripts require language‑specific preprocessing
-- Lighting variations may affect thresholding results
-
----
-
-## Future Improvements
-
-- GUI version using Tkinter or PyQt
-- Batch OCR for multiple images
-- PDF document OCR support
-- Automatic language detection
-- Advanced preprocessing for Arabic/Urdu scripts
-
----
-
-## License
-
-This project is released under the **MIT License**. See the `LICENSE` file for details.
+This project is licensed under the **MIT License**. See the `LICENSE` file for details.
 

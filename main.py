@@ -7,116 +7,730 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.status import Status
-from rich.table import Table
+from rich.table import Table as RichTable
+import re
+import tempfile
+from img2table.document import Image as Img2TableImage
+from img2table.ocr import TesseractOCR
 
 console = Console()
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+def ocr_preprocess(image):
+    """
+    Final OCR preprocessing:
+    - 2x upscale
+    - grayscale
+    - gaussian blur
+    - adaptive threshold (B/W)
+    """
+    img = cv2.resize(image, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+
+    thresh = cv2.adaptiveThreshold(
+        gray, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        31, 11
+    )
+
+    return thresh
+
+
+
+
+def show_preprocessed_image(cv2_img, title="Preprocessed Image"):
+    
+    if not isinstance(cv2_img, np.ndarray):
+        return
+
+    # Handle grayscale vs BGR correctly
+    if len(cv2_img.shape) == 2:  # Grayscale / thresholded
+        pil_img = Image.fromarray(cv2_img)
+    else:  # BGR image
+        rgb = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+    pil_img.save(tmp.name)
+    tmp.close()
+
+    os.startfile(tmp.name)
 
 # =========================================================
-# CLASS 1: OCRProcessor (Logic)
+# IMG2TABLE TABLE EXTRACTOR
+# =========================================================
+
+class Img2TableExtractor:
+    def __init__(self, language="eng"):
+        self.language = language
+        self.ocr_backend = TesseractOCR(lang=language)
+
+    def extract(self, image):
+        """
+        image: OpenCV image (numpy array or file path)
+        returns: list of rows (list of lists of strings)
+        """
+        if isinstance(image, str):
+            img_array = cv2.imread(image)
+        else:
+            img_array = image.copy()
+        
+        # Convert BGR -> RGB
+        img_rgb = cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB)
+        document = Img2TableImage(img_rgb)
+
+        #Extract tables using latest API
+        tables = document.extract_tables(
+            ocr=self.ocr_backend,
+            implicit_rows=False,
+            implicit_columns=False,
+            borderless_tables=False,
+            min_confidence=50
+        )
+
+        if not tables:
+            return []
+
+        # Use the first table
+        table = tables[0].df.fillna("").values.tolist()
+        return table
+
+
+# =========================================================
+# Keep all your existing classes:
+# SmartOrientationCorrector, ImprovedHandwrittenOCR, TextExtractor, ContentDetector
+# =========================================================
+
+# Example: replacing FixedMixedContentHandler's table part
+class FixedMixedContentHandler:
+    def __init__(self, image, language="eng"):
+        if isinstance(image, str):
+            self.image = cv2.imread(image)
+        else:
+            self.image = image.copy()
+        self.language = language
+    
+    def detect_table_region(self):
+        gray = cv2.cvtColor(self.image, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 50, 150)
+
+        # Detect lines
+        h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (50, 1))
+        v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 50))
+        h_lines = cv2.morphologyEx(edges, cv2.MORPH_OPEN, h_kernel, iterations=2)
+        v_lines = cv2.morphologyEx(edges, cv2.MORPH_OPEN, v_kernel, iterations=2)
+        table_mask = cv2.add(h_lines, v_lines)
+        table_mask = cv2.dilate(table_mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3,3)), iterations=2)
+
+        # Count how many pixels are part of lines
+        line_density = np.sum(table_mask > 0) / (self.image.shape[0]*self.image.shape[1])
+        if line_density < 0.005:  # skip if <0.5% pixels are lines
+            return None
+
+        # Contour detection
+        contours, _ = cv2.findContours(table_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        largest_contour = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(largest_contour)
+        area = w*h
+        img_area = self.image.shape[0]*self.image.shape[1]
+
+        # Require both size and line density
+        if area > img_area*0.05 and line_density > 0.01:
+            return {'x': x, 'y': y, 'w': w, 'h': h}
+
+        return None
+
+    
+    def extract_mixed(self, num_columns=None):
+        result = {'text_above': None, 'table': None, 'text_below': None, 'full_text': None}
+        table_region = self.detect_table_region()
+        
+        if table_region:
+            x, y, w, h = table_region['x'], table_region['y'], table_region['w'], table_region['h']
+            padding = 10
+            y_start = max(0, y-padding)
+            y_end = min(self.image.shape[0], y+h+padding)
+            table_img = self.image[y_start:y_end, x:x+w]
+            
+            # Run Img2Table extractor
+            table = Img2TableExtractor(self.language).extract(table_img)
+            if table:
+                result['table'] = table
+            
+            # Text above
+            if y_start>10:
+                text_above_img = self.image[0:y_start, :]
+                result['text_above'] = TextExtractor(text_above_img, self.language).extract()
+            
+            # Text below
+            if y_end < self.image.shape[0]-10:
+                text_below_img = self.image[y_end:, :]
+                result['text_below'] = TextExtractor(text_below_img, self.language).extract()
+        else:
+            # No table region → treat as pure text
+            result['text_above'] = TextExtractor(self.image, self.language).extract()
+        
+        # Full text
+        result['full_text'] = TextExtractor(self.image, self.language).extract()
+        return result
+
+# =========================================================
+# SMART ORIENTATION CORRECTOR
+# =========================================================
+class SmartOrientationCorrector:
+    COMMON_WORDS = {
+        'the', 'be', 'to', 'of', 'and', 'a', 'in', 'that', 'have', 'i',
+        'it', 'for', 'not', 'on', 'with', 'he', 'as', 'you', 'do', 'at',
+        'this', 'but', 'his', 'by', 'from', 'they', 'we', 'say', 'her', 'she',
+        'or', 'an', 'will', 'my', 'one', 'all', 'would', 'there', 'their', 'what',
+        'so', 'up', 'out', 'if', 'about', 'who', 'get', 'which', 'go', 'me',
+        'when', 'make', 'can', 'like', 'time', 'no', 'just', 'him', 'know', 'take',
+        'is', 'was', 'are', 'hello', 'name', 'yes', 'why', 'join', 'us', 'write',
+        'example', 'good', 'birthday', 'invited', 'bash', 'celebrating'
+    }
+    
+    @staticmethod
+    def score_orientation(img, language="eng"):
+        """Score based on REAL WORDS"""
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        text = pytesseract.image_to_string(gray, lang=language, config='--oem 3 --psm 6')
+        
+        if not text.strip():
+            return 0
+        
+        words = text.lower().split()
+        valid_words = sum(1 for w in words if re.sub(r'[^\w]', '', w) in SmartOrientationCorrector.COMMON_WORDS)
+        score = valid_words * 100 + len(words) * 5
+        
+        return score
+    
+    @staticmethod
+    def fix(image, language="eng"):
+        console.print("[yellow]Testing orientations...[/yellow]")
+        
+        versions = {
+            0: image.copy(),
+            90: cv2.rotate(image.copy(), cv2.ROTATE_90_CLOCKWISE),
+            180: cv2.rotate(image.copy(), cv2.ROTATE_180),
+            270: cv2.rotate(image.copy(), cv2.ROTATE_90_COUNTERCLOCKWISE)
+        }
+        
+        results = []
+        for angle, img in versions.items():
+            score = SmartOrientationCorrector.score_orientation(img, language)
+            results.append((angle, img, score))
+            console.print(f"[dim]{angle:3d}°: score={score}[/dim]")
+        
+        best_angle, best_img, best_score = max(results, key=lambda x: x[2])
+        
+        if best_score < 50:
+            console.print("[yellow]⚠ Low confidence, keeping original[/yellow]")
+            return image, 0
+        
+        console.print(f"[green]✓ Selected: {best_angle}° (score: {best_score})[/green]")
+        return best_img, best_angle
+
+class ImprovedHandwrittenOCR:
+    def __init__(self, image, language="eng"):
+        if isinstance(image, str):
+            self.image = cv2.imread(image)
+        else:
+            self.image = image.copy()
+        self.language = language
+    
+    def extract(self):
+        console.print("[cyan]Processing handwritten text...[/cyan]")
+
+        results = []
+
+        # -------------------------------
+        # Method 1: Reliable 2x upscale
+        # -------------------------------
+        img1 = cv2.resize(self.image, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+        gray1 = cv2.GaussianBlur(gray1, (3, 3), 0)
+        thresh1 = cv2.adaptiveThreshold(
+            gray1, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, 31, 11
+        )
+        text1 = pytesseract.image_to_string(thresh1, lang=self.language, config='--oem 1 --psm 6')
+        results.append(text1.strip())
+        console.print(f"[dim]Method 1: {len(text1.strip())} chars[/dim]")
+
+        # -------------------------------
+        # Method 2: 3x upscale + contrast
+        # -------------------------------
+        img2 = cv2.resize(self.image, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+        gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+        gray2 = cv2.GaussianBlur(gray2, (3, 3), 0)
+        gray2 = cv2.convertScaleAbs(gray2, alpha=1.3, beta=0)
+        thresh2 = cv2.adaptiveThreshold(
+            gray2, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, 31, 11
+        )
+        text2 = pytesseract.image_to_string(thresh2, lang=self.language, config='--oem 1 --psm 6')
+        results.append(text2.strip())
+        console.print(f"[dim]Method 2: {len(text2.strip())} chars[/dim]")
+
+        # -------------------------------
+        # Pick the longest text (most characters)
+        # -------------------------------
+        best = max(results, key=lambda x: len(x))
+        console.print(f"[green]✓ Best result: {len(best)} characters[/green]")
+
+        return best
+
+
+
+# -----------------------------
+# FixedTableExtractor (reuse your previous one)
+# -----------------------------
+class FixedTableExtractor:
+    def __init__(self, image):
+        if isinstance(image, str):
+            self.image = cv2.imread(image)
+        else:
+            self.image = image.copy()
+
+    def extract(self, num_columns=None):
+        """OCR-only table extraction using y-coordinate clustering (borderless safe)"""
+        gray = cv2.cvtColor(self.image, cv2.COLOR_BGR2GRAY)
+        data = pytesseract.image_to_data(gray, output_type=pytesseract.Output.DICT, config='--oem 3 --psm 6')
+
+        words = []
+        for i, txt in enumerate(data['text']):
+            txt = txt.strip()
+            if txt:
+                words.append({'text': txt, 'x': data['left'][i], 'y': data['top'][i], 'cx': data['left'][i]+data['width'][i]//2})
+
+        if not words:
+            return []
+
+        # Group words by rows
+        words.sort(key=lambda w: w['y'])
+        rows = []
+        current_row = [words[0]]
+        for w in words[1:]:
+            if abs(w['y'] - current_row[0]['y']) < 30:
+                current_row.append(w)
+            else:
+                rows.append(current_row)
+                current_row = [w]
+        rows.append(current_row)
+
+        # Assign words to columns
+        if num_columns is None:
+            num_columns = max(1, max(len(r) for r in rows))
+
+        table = []
+        for row in rows:
+            row_data = [''] * num_columns
+            for idx, w in enumerate(row):
+                col_idx = min(idx, num_columns-1)
+                row_data[col_idx] = w['text'] if not row_data[col_idx] else row_data[col_idx] + ' ' + w['text']
+            table.append(row_data)
+        return table
+
+
+
+# =========================================================
+# TEXT EXTRACTOR
+# =========================================================
+class TextExtractor:
+    def __init__(self, image, language="eng"):
+        if isinstance(image, str):
+            self.image = cv2.imread(image)
+        else:
+            self.image = image.copy()
+        self.language = language
+    
+    def extract(self):
+        img = cv2.resize(self.image, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        thresh = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, 31, 11
+        )
+        
+        text = pytesseract.image_to_string(thresh, lang=self.language, config='--oem 3 --psm 6')
+        return text.strip()
+    
+
+    
+
+# =========================================================
+# FIXED MIXED CONTENT HANDLER
+# =========================================================
+class FixedMixedContentHandler:
+    def __init__(self, image, language="eng"):
+        if isinstance(image, str):
+            self.image = cv2.imread(image)
+        else:
+            self.image = image.copy()
+        self.language = language
+    
+    def detect_table_region(self):
+        """Improved table region detection"""
+        console.print("[cyan]Detecting table region...[/cyan]")
+        
+        gray = cv2.cvtColor(self.image, cv2.COLOR_BGR2GRAY)
+        edges = cv2.Canny(gray, 50, 150)
+        
+        # Detect lines
+        h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (50, 1))
+        v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 50))
+        
+        h_lines = cv2.morphologyEx(edges, cv2.MORPH_OPEN, h_kernel, iterations=2)
+        v_lines = cv2.morphologyEx(edges, cv2.MORPH_OPEN, v_kernel, iterations=2)
+        
+        # Combine
+        table_mask = cv2.add(h_lines, v_lines)
+        
+        # Dilate to connect
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        table_mask = cv2.dilate(table_mask, kernel, iterations=2)
+        
+        # Find contours
+        contours, _ = cv2.findContours(table_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if not contours:
+            console.print("[yellow]No table region found (trying full image as table)[/yellow]")
+            return None
+        
+        # Find largest region
+        largest_contour = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(largest_contour)
+        
+        area = w * h
+        img_area = self.image.shape[0] * self.image.shape[1]
+        
+        # Must be at least 5% of image
+        if area > img_area * 0.05:
+            console.print(f"[green]✓ Table region: {w}×{h} at ({x},{y}) - {area/img_area*100:.1f}% of image[/green]")
+            return {'x': x, 'y': y, 'w': w, 'h': h}
+        
+        console.print("[yellow]No significant table region found[/yellow]")
+        return None
+    
+    def extract_mixed(self, num_columns=None):
+        console.print("[bold cyan]═══ MIXED CONTENT EXTRACTION ═══[/bold cyan]")
+
+        result = {
+            'text_above': None,
+            'table': None,
+            'text_below': None,
+            'full_text': None
+        }
+
+        # Try to detect table region first
+        table_region = self.detect_table_region()
+
+        if table_region:
+            x, y, w, h = table_region['x'], table_region['y'], table_region['w'], table_region['h']
+
+            # Extract table region
+            padding = 10
+            y_start = max(0, y - padding)
+            y_end = min(self.image.shape[0], y + h + padding)
+            x_start = max(0, x - padding)
+            x_end = min(self.image.shape[1], x + w + padding)
+
+            table_img = self.image[y_start:y_end, x_start:x_end]
+            cv2.imwrite("debug_edges.png", cv2.Canny(
+                cv2.cvtColor(self.image, cv2.COLOR_BGR2GRAY),
+                50, 150
+            ))
+
+            
+
+            # Run TabularOCR
+            table = FixedTableExtractor(table_img).extract(num_columns)
+
+            if table:
+                result['table'] = table
+            else:
+                console.print("[yellow]⚠ Region rejected as table, treating as text[/yellow]")
+                result['text_above'] = TextExtractor(self.image, self.language).extract()
+                result['table'] = None
+
+
+
+            # Extract text above the table
+            if y_start > 10:
+                text_above_img = self.image[0:y_start, :]
+                result['text_above'] = TextExtractor(text_above_img, self.language).extract()
+
+            # Extract text below the table
+            if y_end < self.image.shape[0] - 10:
+                text_below_img = self.image[y_end:, :]
+                result['text_below'] = TextExtractor(text_below_img, self.language).extract()
+
+        else:
+            console.print("[yellow]⚠ No confident table region → treating image as pure text[/yellow]")
+            result['table'] = None
+            result['text_above'] = TextExtractor(self.image, self.language).extract()
+
+
+        # Always get full text for reference
+        result['full_text'] = TextExtractor(self.image, self.language).extract()
+
+        return result
+
+
+# =========================================================
+# CONTENT DETECTOR
+# =========================================================
+class ContentDetector:
+    @staticmethod
+    def detect(image):
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        # Table signal
+        edges = cv2.Canny(gray, 50, 150)
+        lines = cv2.HoughLinesP(
+            edges, 1, np.pi/180,
+            threshold=100,
+            minLineLength=60,
+            maxLineGap=10
+        )
+
+        # Text signal
+        text = pytesseract.image_to_string(gray, config="--psm 6").strip()
+
+        has_table = lines is not None and len(lines) > 8
+        has_text = len(text) > 30
+
+        if has_table and has_text:
+            return "mixed"
+        if has_table:
+            return "table"
+        return "text"
+
+
+
+# =========================================================
+# MAIN PROCESSOR
 # =========================================================
 class OCRProcessor:
     def __init__(self, image_path, language="eng"):
         self.image_path = image_path
         self.language = language
-        pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-
-    def process_image(self):
-        """Simple preprocessing for Latin-based text."""
-        img = cv2.imread(self.image_path)
-        if img is None:
-            raise FileNotFoundError(f"Could not load image at {self.image_path}")
-
-        # Upscale 2x (sufficient for Latin text)
-        img = cv2.resize(img, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (3, 3), 0)
-
-        # Adaptive threshold
-        thresh = cv2.adaptiveThreshold(
-            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-            cv2.THRESH_BINARY, 31, 11
-        )
-
-        return thresh
-
-    def get_text(self):
-        processed_img = self.process_image()
-        pil_img = Image.fromarray(cv2.cvtColor(processed_img, cv2.COLOR_GRAY2RGB))
-
-        # PSM 6: Uniform block
-        custom_config = "--oem 3 --psm 6 -c preserve_interword_spaces=1"
-        text = pytesseract.image_to_string(pil_img, lang=self.language, config=custom_config)
-        return text.strip()
+    
+    def process(self, mode="auto", num_columns=None, fix_orientation=True, save_comparison=False):
+        img_original = cv2.imread(self.image_path)
+        if img_original is None:
+            raise FileNotFoundError(f"Image not found: {self.image_path}")
+        
+        img = img_original.copy()
+        
+        # Save original for comparison
+        if save_comparison:
+            cv2.imwrite("original_image.png", img_original)
+            console.print("[dim]Saved: original_image.png[/dim]")
+        
+        if fix_orientation:
+            console.print("[bold cyan]═══ ORIENTATION CHECK ═══[/bold cyan]")
+            img, angle = SmartOrientationCorrector.fix(img, self.language)
+            self.final_preprocessed_img = ocr_preprocess(img)            
+            if save_comparison and angle != 0:
+                cv2.imwrite("corrected_orientation.png", img)
+                console.print("[dim]Saved: corrected_orientation.png[/dim]")
+        
+        if mode == "auto":
+            mode = ContentDetector.detect(img)
+        
+        console.print(f"[bold cyan]═══ MODE: {mode.upper()} ═══[/bold cyan]\n")
+        
+        result = {'mode': mode, 'text': None, 'table': None, 'text_above': None, 'text_below': None}
+        
+        if mode == "handwritten":
+            hw = ImprovedHandwrittenOCR(img)
+            result['text'] = hw.extract()
+            
+        elif mode == "mixed":
+            handler = FixedMixedContentHandler(img, self.language)
+            mixed = handler.extract_mixed(num_columns)
+            result.update(mixed)
+            
+        elif mode == "table":
+            extractor = FixedTableExtractor(img)
+            result['table'] = extractor.extract(num_columns)
+            txt_ext = TextExtractor(img, self.language)
+            result['text'] = txt_ext.extract()
+            
+        else:  # text
+            txt_ext = TextExtractor(img, self.language)
+            result['text'] = txt_ext.extract()
+        
+        return result
 
 # =========================================================
-# CLASS 2: OCRTerminalApp (UI)
+# APP
 # =========================================================
-class OCRTerminalApp:
-    def __init__(self):
-        self.selected_path = ""
-        self.selected_lang = "eng"
-
-    def display_header(self):
+class OCRApp:
+    LANGUAGES = {
+        "1": ("English", "eng"),
+        "2": ("Spanish", "spa"),
+        "3": ("French", "fra"),
+        "4": ("German", "deu")
+    }
+    
+    def run(self):
         console.print(Panel(
-            "[bold cyan]SIMPLE OCR SYSTEM[/bold cyan]\n"
-            "[white]Languages: English, Spanish, French, German[/white]", 
+            "[bold cyan]COMPLETE OCR SYSTEM - FINAL VERSION[/bold cyan]\n"
+            "✓ Smart orientation (word-based)\n"
+            "✓ Improved handwritten (includes standard OCR)\n"
+            "✓ Fixed table extraction (lower threshold)\n"
+            "✓ Auto column detection (dual method)\n"
+            "✓ Fixed mixed content (better detection)\n"
+            "✓ Comparison images (see original)\n"
+            "✓ Multi-language support",
             expand=False
         ))
-
-    def get_user_input(self):
-        while True:
-            path = Prompt.ask("Enter image path").strip('"')
-            if os.path.exists(path):
-                self.selected_path = path
-                break
-            console.print("[red]Error: File not found.[/red]")
-
-        # Language menu
-        lang_table = Table(title="Available Languages")
-        lang_table.add_column("ID", style="cyan", justify="center")
-        lang_table.add_column("Language", style="green")
-
-        lang_options = {
-            "1": ("English", "eng"),
-            "2": ("Spanish", "spa"),
-            "3": ("French", "fra"),
-            "4": ("German", "deu")
-        }
-
-        for key, (name, _) in lang_options.items():
-            lang_table.add_row(key, name)
         
-        console.print(lang_table)
+        while True:
+            path = Prompt.ask("\nImage path").strip('"')
+            if os.path.exists(path):
+                console.print("[green]✓ Opening image...[/green]")
+                os.startfile(path)   # 👈 opens the image
+                break
+            console.print("[red]File not found[/red]")
 
-        choice = Prompt.ask("Select Language ID", choices=lang_options.keys())
-        self.selected_lang = lang_options[choice][1]
+        
+        console.print("\n[bold]Languages:[/bold]")
+        for k, (name, _) in self.LANGUAGES.items():
+            console.print(f"  {k}. {name}")
+        
+        lang_choice = Prompt.ask("Language", choices=self.LANGUAGES.keys(), default="1")
+        language = self.LANGUAGES[lang_choice][1]
+        
+        console.print("\n[bold]Modes:[/bold]")
+        console.print("  1. Auto-detect")
+        console.print("  2. Table")
+        console.print("  3. Text")
+        console.print("  4. Handwritten")
+        console.print("  5. Mixed (Text + Table)")
+        
+        mode_choice = Prompt.ask("Mode", choices=["1", "2", "3", "4", "5"], default="1")
+        modes = {"1": "auto", "2": "table", "3": "text", "4": "handwritten", "5": "mixed"}
+        mode = modes[mode_choice]
+        
+        num_cols = None
+        if mode in ["table", "mixed"]:
+            auto = Prompt.ask("Auto-detect columns?", choices=["y", "n"], default="y")
+            if auto == "n":
+                num_cols = int(Prompt.ask("Number of columns", default="6"))
+        
+        fix_orient = Prompt.ask("Check orientation?", choices=["y", "n"], default="y") == "y"
+        save_comparison = Prompt.ask("Save comparison images?", choices=["y", "n"], default="y") == "y"
+        
+        console.print()
+        with Status("[green]Processing...[/green]"):
+            processor = OCRProcessor(path, language)
+            result = processor.process(
+                mode=mode, 
+                num_columns=num_cols, 
+                fix_orientation=fix_orient,
+                save_comparison=save_comparison
+                # Show final preprocessed image (what OCR actually saw)
+            )
 
-    def start_process(self):
-        try:
-            with Status(f"[bold green]Processing {self.selected_lang.upper()}...[/bold green]"):
-                processor = OCRProcessor(self.selected_path, self.selected_lang)
-                result_text = processor.get_text()
+        if hasattr(processor, "final_preprocessed_img"):
+            show_preprocessed_image(processor.final_preprocessed_img)
 
-            console.print("\n[bold yellow]OCR RESULT:[/bold yellow]")
-            console.print(Panel(result_text if result_text else "[No text detected]"))
-
-            # Save and auto-open
-            filename = "OCR_Result.txt"
-            with open(filename, "w", encoding="utf-8") as f:
-                f.write(result_text)
+        
+        console.print()
+        
+        # Display results
+        if result['text_above']:
+            console.print("[yellow]📄 TEXT ABOVE TABLE:[/yellow]")
+            console.print(Panel(result['text_above'][:300], expand=False))
+        
+        if result['table']:
+            display = RichTable(show_header=False, show_lines=True, title="📊 TABLE")
             
-            console.print(f"\n[green]Saved to {filename}. Opening now...[/green]")
-            os.startfile(filename)
-
-        except Exception as e:
-            console.print(f"[bold red]System Error:[/bold red] {e}")
-
-    def run(self):
-        self.display_header()
-        self.get_user_input()
-        self.start_process()
+            max_cols = len(result['table'][0])
+            for i in range(max_cols):
+                display.add_column(f"Col{i+1}", style="cyan", overflow="fold", max_width=30)
+            
+            for row in result['table']:
+                display.add_row(*row)
+            
+            console.print(display)
+            console.print(f"[green]✓ {len(result['table'])} rows × {max_cols} columns[/green]\n")
+        
+        if result['text_below']:
+            console.print("[yellow]📄 TEXT BELOW TABLE:[/yellow]")
+            console.print(Panel(result['text_below'][:300], expand=False))
+        
+        if result['text'] and not result['table']:
+            console.print("[yellow]📄 TEXT:[/yellow]")
+            preview = result['text'][:500] + ("..." if len(result['text']) > 500 else "")
+            console.print(Panel(preview, expand=False))
+        
+        # Save files
+        base = os.path.splitext(os.path.basename(path))[0]
+        saved = []
+        
+        if result['table']:
+            f = f"{base}_table.txt"
+            with open(f, 'w', encoding='utf-8') as file:
+                for row in result['table']:
+                    file.write(' | '.join(row) + '\n')
+            saved.append(f)
+        
+        if result['text_above']:
+            f = f"{base}_text_above.txt"
+            with open(f, 'w', encoding='utf-8') as file:
+                file.write(result['text_above'])
+            saved.append(f)
+        
+        if result['text_below']:
+            f = f"{base}_text_below.txt"
+            with open(f, 'w', encoding='utf-8') as file:
+                file.write(result['text_below'])
+            saved.append(f)
+        
+        if result['text']:
+            f = f"{base}_text.txt"
+            with open(f, 'w', encoding='utf-8') as file:
+                file.write(result['text'])
+            saved.append(f)
+        
+        if result.get('full_text'):
+            f = f"{base}_full_text.txt"
+            with open(f, 'w', encoding='utf-8') as file:
+                file.write(result['full_text'])
+            saved.append(f)
+        
+        if saved:
+            console.print(f"\n[green]✓ Saved: {', '.join(saved)}[/green]")
+        
+        # Show comparison images info
+        if save_comparison:
+            console.print("\n[bold cyan]Comparison Images:[/bold cyan]")
+            console.print("  • original_image.png - Your uploaded image")
+            if fix_orient:
+                console.print("  • corrected_orientation.png - After rotation (if rotated)")
+            if mode == "mixed":
+                console.print("  • debug_table_region.png - Detected table region")
+        
+        if saved:
+            os.startfile(saved[0])
 
 if __name__ == "__main__":
-    app = OCRTerminalApp()
-    app.run()
+    try:
+        app = OCRApp()
+        app.run()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Interrupted[/yellow]")
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        import traceback
+        traceback.print_exc()
