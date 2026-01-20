@@ -11,6 +11,3 @@ OCR_Result.txt
 # OS files
 .DS_Store
 Thumbs.db
-
-#OCR input text Images
-Text_Images/
