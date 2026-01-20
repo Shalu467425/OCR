@@ -9,11 +9,7 @@ from rich.prompt import Prompt
 from rich.status import Status
 from rich.table import Table as RichTable
 import re
-from PIL import Image
-import cv2
-import numpy as np
 import tempfile
-import os
 
 from img2table.document import Image as Img2TableImage
 from img2table.ocr import TesseractOCR
@@ -191,7 +187,7 @@ class SmartOrientationCorrector:
         best_angle, best_img, best_score = max(results, key=lambda x: x[2])
         
         if best_score < 50:
-            console.print(f"[yellow]⚠ Low confidence, keeping original[/yellow]")
+            console.print("[yellow]⚠ Low confidence, keeping original[/yellow]")
             return image, 0
         
         console.print(f"[green]✓ Selected: {best_angle}° (score: {best_score})[/green]")
